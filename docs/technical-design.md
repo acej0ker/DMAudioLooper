@@ -664,8 +664,58 @@ A list of cue sheets with search, **New from Spotify link**, **Import**, and **E
 | D11 | **Transitions run to completion**; cues made during one wait for the next boundary | Cut transitions short | A transition is written for its target, so cutting it usually sounds wrong. *Jump now* is still available | Proposed, needs review |
 | D12 | **IndexedDB + versioned JSON import/export**; no cloud | localStorage; a cloud database | Portable and private. IndexedDB can also hold v2 file handles | Proposed |
 | D13 | **Never overlap, mix, process, record or cache Spotify audio** | Crossfades | Spotify Developer Policy III.7 and the DRM | Required |
-| D14 | **Stack: TypeScript, React and Vite; Vitest; Playwright**; `idb`; `zod` | Svelte; plain JavaScript | Widely used and well-typed. The Conductor is plain TypeScript and doesn't depend on any framework | Proposed |
+| D14 | **Stack: TypeScript, React and Vite; Vitest; Playwright**; `idb`; `zod` | Svelte, Solid, Vue, plain TypeScript or Lit, Angular, non-JavaScript stacks; plain JavaScript; Next.js | TypeScript protects the risky timing and state code. React has the largest ecosystem for a form-heavy editor. The engine doesn't depend on any framework, so this choice is reversible. See §12.1 | Proposed |
 | D15 | **Positions in integer milliseconds of track time** | Seconds as floating point; samples | Easy to read in JSON and editors, with no floating-point drift. v2 converts to samples internally | Proposed |
+
+### 12.1 Technology stack rationale (D14)
+
+**What the stack has to handle.** This is a small app: three views and about 20 components. The hard part, the timing engine (Conductor, driver and backends), is plain TypeScript with no UI framework (D4). So the UI framework **does not affect loop timing**. It affects how quickly the form-heavy editor can be built, how much existing help is available, and how easily the app can be changed later.
+
+The two browser APIs that matter most, the Spotify Web Playback SDK and the Web Audio API, are JavaScript APIs. Any stack that reaches them from another language adds a translation layer exactly where timing matters.
+
+#### Language: TypeScript rather than JavaScript
+
+TypeScript's benefits fall on the riskiest parts of this project:
+
+| Benefit | Where it matters here |
+|---|---|
+| **Unit safety** | Track time (`TrackMs`) and wall-clock time (`PerfMs`) are both just numbers in milliseconds. Mixing them up is the most likely bug in the driver (§9.3–9.4). "Branded" number types turn that mistake into a compile error |
+| **Every state handled** | `PlayState` (§8.1) is a set of tagged variants, so the compiler checks that every `switch` handles every state. When v2 adds a state, every place that ignores it is flagged |
+| **One schema for two jobs** | The `zod` schema checks imported JSON and also produces the TypeScript types (`z.infer`), so the validation and the in-memory model can't drift apart (§10.4) |
+| **Backend contract** | A new `LocalAudioBackend` must implement `PlaybackBackend`, and the compiler lists anything missing |
+| **Spotify SDK types** | Type definitions for the SDK exist (`@types/spotify-web-playback-sdk`) |
+
+The costs are a build step, which Vite handles, and some type annotations. Plain JavaScript with JSDoc type comments gets some of this checking, but with clumsier syntax and weaker editor support for tagged variants. It was rejected because the benefits are concentrated in the timing and state code.
+
+#### UI framework
+
+| Option | Strengths for this app | Main drawback | Verdict |
+|---|---|---|---|
+| **React** | The largest ecosystem: drag-to-reorder lists (dnd-kit), accessible forms and dialogs (React Aria, Radix), and Testing Library. Most published Spotify SDK examples use it. Developers and AI coding assistants know it best | Re-renders whole components when state changes, so the live progress bar needs care (see below). About 45 KB gzipped | **Chosen** |
+| **Svelte 5** | Updates only what changed, which suits the live Stage. Less code, smaller bundles, built-in animations | Smaller ecosystem. Svelte 5 changed the syntax ("runes"), so many tutorials, examples and AI suggestions use the old style | Strong runner-up |
+| **SolidJS** | React-like syntax that also updates only what changed; very fast | The smallest community here, with few ready-made components | Viable |
+| **Vue 3** | Mature, good documentation, efficient updates, convenient form binding | No clear advantage over React for this app, and a smaller ecosystem for the libraries above | Viable |
+| **Plain TypeScript / Lit web components** | No framework dependency | The editor has dozens of validated timestamp fields and rows that can be added and removed. Keeping that page in sync with the data by hand is where time and bugs go | Rejected |
+| **Angular** | A complete, opinionated framework | Far heavier than a three-view personal app needs | Rejected |
+| **Non-JavaScript (Flutter web, Rust/WASM, Blazor, Elm)** | — | Every call to the Spotify SDK and Web Audio goes through a translation layer, adding friction in the timing code | Rejected |
+
+**Why React's main weakness doesn't matter here:**
+- **The music state changes rarely**, only a few times a minute (cues and boundaries), and React only re-renders then.
+- **The fast-moving displays bypass React's state.** The progress bar and countdown use a CSS animation, or a small `requestAnimationFrame` loop that writes to the page element directly. They don't trigger re-renders every frame.
+- **Re-renders are targeted.** The UI subscribes to the Conductor through `useSyncExternalStore` with selectors, so a pad re-renders only when its own status changes.
+- **Rendering is fast.** A UI this size typically renders in a few milliseconds, within NFR-1's ±10 ms budget. The jump logs from Spike 0 and M1 will confirm it.
+
+#### Build tool: Vite
+
+- It serves the development build on `http://127.0.0.1`, which matters because Spotify no longer allows `localhost` redirect URIs (§5).
+- It outputs plain static files for GitHub Pages, with no server (D3).
+- It supports TypeScript without extra setup, and Vitest reuses its configuration.
+
+Alternatives: Next.js and Remix are built around server features this app doesn't use. Create React App was deprecated in 2025. A hand-configured webpack setup means more configuration and slower builds.
+
+#### The choice can be reversed
+
+The Conductor, driver, backends, schema and storage are all plain TypeScript, so changing UI framework later only means rewriting the views. **If you already know Svelte or Vue well, that familiarity outweighs the differences above, and that framework should be used instead.**
 
 ---
 
