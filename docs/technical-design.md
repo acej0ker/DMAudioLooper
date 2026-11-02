@@ -383,7 +383,10 @@ The driver carries out the plan and calls `conductor.commit(plan)` once it has h
 1. The user clicks **Connect Spotify**, which starts the **Authorization Code with PKCE** flow in the browser. No client secret and no backend are needed.
    - **Scopes:** `streaming user-read-email user-read-private` (needed by the SDK), plus `user-modify-playback-state user-read-playback-state`.
    - **Redirect URIs:** `https://<you>.github.io/<repo>/callback` (production) and `http://127.0.0.1:5173/callback` (development; `localhost` is not allowed).
-   - **Tokens:** the access token is kept in memory only. The refresh token is kept in IndexedDB so you stay signed in, and it is refreshed automatically before it expires.
+   - **Tokens (D18):**
+     - Both the access token and the refresh token are kept **in memory only** and are never stored.
+     - The access token lasts one hour and is refreshed automatically before it expires, so a long session continues without interruption.
+     - After a page reload, you click *Connect* again. If you've approved the app before and are still logged in to Spotify in that browser, Spotify usually sends you straight back.
 2. Load `https://sdk.scdn.co/spotify-player.js` and create a `Spotify.Player` named **"DM Audio Looper"**.
 3. On the `ready` event, record the `device_id`.
 4. Check `GET /v1/me` for `product === "premium"` and show a clear error if the account isn't Premium.
@@ -416,7 +419,7 @@ estimate(t) = paused ? sample.positionMs : sample.positionMs + (t − sample.per
 ```
 
 - **Sample sources:** every `player_state_changed` event, plus a `getCurrentState()` poll every 200 ms while playing (configurable).
-- **Jitter control:** a new sample replaces the anchor only if it differs from the estimate by more than 15 ms, or if a seek or pause has just happened. This stops small reporting noise from moving planned jumps.
+- **No filtering:** every sample replaces the anchor. Samples scatter by a few milliseconds, which is negligible next to the seek gap. Spike 0 measures the scatter (§16), and smoothing is added only if it turns out to cause audible problems.
 - **Track check:** each sample's track ID is compared with the cue sheet's track, including Spotify's `linked_from` for re-linked regional versions. A mismatch means playback was taken over (§9.6).
 
 ### 9.4 Scheduling a jump
@@ -429,7 +432,7 @@ fireAt (wall clock) = now + (plan.atMs − estimate(now)) − seekLeadMs     // 
 
 - **Two-stage timer:** a coarse `setTimeout` wakes the driver about 50 ms before `fireAt`. A short fine loop (a `MessageChannel` tick about every 4 ms) then sends `player.seek()` at `fireAt`. When playback is contiguous, the state simply changes at `atMs` with no seek.
 - **Background tabs:** Chrome exempts **audible** tabs from background timer throttling, and while the looper is playing the tab is audible. A Web Worker timer is kept as a fallback in case browser behavior changes.
-- **Replanning:** the jump is planned again whenever the pending cue changes, the anchor moves by more than 10 ms, or playback pauses or resumes.
+- **Replanning:** the countdown to the next jump restarts from the latest estimate whenever a new sample arrives, the pending cue changes, or playback pauses or resumes.
 - **Late:** if `fireAt` has already passed (for example, the laptop was busy), the seek fires immediately and the delay is logged.
 
 This is the *Explore → Boss* move from §7.6. Explore's end flows into the fill with no seek, and one seek happens at the end of the fill:
@@ -592,9 +595,9 @@ Errors block saving to the Stage. Warnings are shown but allowed.
 
 ### 10.4 Storage and import/export
 
-- **Storage:** IndexedDB, through the small `idb` wrapper. It holds the cue sheets, settings (seek offset, poll interval) and the refresh token. IndexedDB is chosen over `localStorage` because v2 needs to store file handles for local audio, which `localStorage` cannot hold.
+- **Storage:** IndexedDB, through the small `idb` wrapper. It holds the cue sheets and settings (seek offset, poll interval). No credentials are ever stored (D18), so exports can't contain any. IndexedDB is chosen over `localStorage` because v2 needs to store file handles for local audio, which `localStorage` cannot hold.
 - **Export:** one sheet or the whole library, as `.json` files.
-- **Import:** checked against the schema with `zod`. Older `schemaVersion`s are upgraded by migration functions. When a sheet with the same `id` already exists, the user chooses **keep both**, **replace**, or **skip**.
+- **Import:** checked against the schema with `zod`. Older `schemaVersion`s are upgraded by migration functions. When a sheet with the same `id` already exists, the user chooses **keep both**, **replace**, or **skip**. Imported text (titles, names, labels, notes) is only ever displayed as plain text, never as HTML.
 - **Sharing with other DMs:** JSON files contain only timestamps and track IDs, never audio, so they can be shared freely. The recipient needs Premium and access to the same track.
 - **No cloud sync** in v1. To move between devices, export and import.
 
@@ -678,6 +681,7 @@ A list of cue sheets with search, **New from Spotify link**, **Import**, and **E
 | D15 | **Positions in integer milliseconds of track time** | Seconds as floating point; samples | Easy to read in JSON and editors, with no floating-point drift. v2 converts to samples internally | Proposed |
 | D16 | **A *Start session* button unlocks audio after sign-in** | Unlock on the Connect click (impossible: the sign-in redirect loses the click); unlock on the first pad click | One extra click per session, and in return the first cue starts instantly from the muted preload | You |
 | D17 | **Clicking a section during the outro queues a restart:** when the outro ends, that section starts as if from silence, intro included | Disable pads during the outro; cancel the ending and jump straight away | Your choice. It's an ordinary jump to the resolved `@start → X` span, so the engine needs no extra state | You |
+| D18 | **Spotify tokens are kept in memory only** | Store the refresh token in IndexedDB to stay signed in across reloads | Nothing is stored, so no credential can leak through an export or be read later by injected script. The cost is one *Connect* click after each page reload | You |
 
 ### 12.1 Technology stack rationale (D14)
 
@@ -798,7 +802,7 @@ The Conductor, the data model and the UI stay the same. Only a new backend and d
 
 | Milestone | Contents | Exit criteria |
 |---|---|---|
-| **Spike 0: measure Spotify seeks** (go/no-go) | PKCE login, SDK device, a hard-coded track, and a 10 s loop for 100 passes. Log the seek-to-sample delay. **Record the speaker output** with a phone or external recorder (tab capture can't record DRM audio) and measure the gaps in an audio editor | Median gap and p95 gap compared with NFR-2. **If it fails:** decide with you whether to accept it or bring v2 (local files) forward |
+| **Spike 0: measure Spotify seeks** (go/no-go) | PKCE login, SDK device, a hard-coded track, and a 10 s loop for 100 passes. Log the seek-to-sample delay, and how far position samples scatter around the extrapolated estimate (to decide whether smoothing is needed, §9.3). **Record the speaker output** with a phone or external recorder (tab capture can't record DRM audio) and measure the gaps in an audio editor | Median gap and p95 gap compared with NFR-2. **If it fails:** decide with you whether to accept it or bring v2 (local files) forward |
 | **M1: Conductor + Stage** | Conductor with tests, the driver, the Spotify backend, and a Stage loading a hand-written JSON sheet | All of §8 works against a real track. NFR-1 and NFR-3 are met |
 | **M2: Editor + library** | Editor with validation and previews, IndexedDB storage, import/export | You can author the §7.6 example from scratch in the UI |
 | **M3: Hardening** | Calibration settings, all of §9.6, wake lock, mini Stage (Picture-in-Picture), deployment to GitHub Pages | A 4-hour soak test passes NFR-4 |
