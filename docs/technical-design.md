@@ -14,7 +14,7 @@ DM Audio Looper is a browser app that lets a tabletop Game Master play a video-g
 
 v1 plays music through **Spotify**, with the browser tab acting as the Spotify playback device. The core logic is kept separate from the audio source, so a **local audio file** backend can be added later. That backend will give seamless, sample-accurate loops, which Spotify cannot.
 
-The main risks are about Spotify, not engineering. Every loop is a seek, so it will never be seamless. Spotify no longer gives apps beat or bar data. Spotify's developer terms restrict apps that alter or remix content, so this tool must remain a personal, unpublished app. See §13.
+The main risks are about Spotify, not engineering. Every loop is a seek, so it will never be seamless. Spotify no longer gives apps beat or bar data. Spotify's [Developer Policy](https://developer.spotify.com/policy/) (Section III.7) bans mixing or overlapping Spotify content, and its [iOS SDK reference](https://developer.spotify.com/documentation/ios/reference) says the platform can't be used for apps that alter Spotify content. So this tool must remain a personal, unpublished app. See §13.
 
 ---
 
@@ -61,7 +61,7 @@ When a DM plays these tracks during an encounter, the music runs out of the righ
 - Crossfades, layering or mixing two audio streams. Spotify's policy forbids it, and it is not needed for v1.
 - Beat- or bar-quantized switching, or tempo grids.
 - Switching between tracks inside one cue, playlists, and encounter presets.
-- Spotify Jam, Discord, VTT integration, or any remote players.
+- Remote players: Spotify Jam, Discord and VTT integration. **Jam is a future goal.** Spike 0 includes a quick test of whether it already works (§14.3).
 - Keyboard hotkeys, MIDI, Stream Deck, or a phone remote. The architecture leaves room for these.
 - Public distribution or multi-user hosting.
 
@@ -114,6 +114,7 @@ When a DM plays these tracks during an encounter, the music runs out of the righ
 | **Pending cue** | The cue that will run at the next boundary. There is at most one |
 | **Boundary** | The end of the span currently playing (a loop pass or a transition) |
 | **Seek** | Moving the playhead to a different track time. On Spotify it causes a short audible gap |
+| **IndexedDB** | The database built into every browser. Each website gets its own private store of structured records that survives closing the browser (§10.4) |
 | **Contiguous** | The next span starts exactly where the current one ends, so playback simply continues with no seek |
 | **Seek lead** | How early (in ms) a seek is sent so that the new audio arrives on time |
 
@@ -128,12 +129,12 @@ These were checked against public sources in November 2026; links are in §18. S
 | The **Web Playback SDK** turns a browser tab into a Spotify Connect device. It needs Spotify **Premium** and a browser with DRM (Widevine) support | It is the v1 playback engine. Desktop wrappers (Electron or Tauri) cannot host it easily, which is why this is a web app |
 | **Audio Analysis and Audio Features endpoints** (beats, bars, sections, tempo) have been closed to new apps since **27 Nov 2024** (they return 403) | No automatic beat grid or section detection. All loop points come from you |
 | **Spotify audio is DRM-protected.** Apps cannot read the decoded audio | No waveform display, no analysis and no zero-crossing snapping for Spotify tracks. Loop points are set by ear |
-| The **Developer Policy, Section III.7**, says: *"Do not permit any device or system to segue, mix, re-mix, or overlap any Spotify Content with any other audio content (including other Spotify Content)."* | No crossfades and no overlapping audio. Every transition is a jump within one audio stream |
-| Spotify's SDK documentation says the platform *"can not be used to develop applications that alter Spotify Content"*. Community moderators have said that skipping sections of a track falls under this | **Policy risk:** looping by seeking may count as altering content. The tool must stay personal and unpublished (§13, risk R1) |
+| The [**Developer Policy**](https://developer.spotify.com/policy/), **Section III.7**, says: *"Do not permit any device or system to segue, mix, re-mix, or overlap any Spotify Content with any other audio content (including other Spotify Content)."* | No crossfades and no overlapping audio. Every transition is a jump within one audio stream |
+| Spotify's [iOS SDK reference](https://developer.spotify.com/documentation/ios/reference) says the platform *"can not be used to develop applications that alter Spotify Content"*. Replies on Spotify's [developer forum](https://community.spotify.com/t5/Spotify-for-Developers/Allowing-users-to-customise-audio-playback/m-p/6459860/highlight/true) say that skipping sections of a track falls under this; that isn't an official ruling | **Policy risk:** looping by seeking may count as altering content. The tool must stay personal and unpublished (§13, risk R1) |
 | **Development Mode** (since Feb–Mar 2026): the app owner must have Premium, at most **5 allowlisted users**, and a shared API quota per developer account. HTTP 429 responses carry a `QUOTA_EXCEEDED` reason | Fine for one DM. It rules out publishing the app. API calls are kept to a minimum (§9.2) |
 | **OAuth** (enforced since 27 Nov 2025): the implicit grant has been removed, public clients must use **Authorization Code with PKCE**, and redirect URIs must be HTTPS. `localhost` is not allowed; use `http://127.0.0.1:PORT` for local development | A backend-free login with PKCE (§9.1) |
 | A Premium account streams to **one device at a time** | While the looper plays, your phone or desktop Spotify app cannot play anything else on the same account |
-| There is **no Web API access to Spotify Jam** | Jam cannot be part of v1 (§14.3) |
+| There is **no Web API access to Spotify Jam** | The app can't start or control a Jam. Whether Jam guests follow the host's loop jumps by themselves is untested (§14.3) |
 
 ---
 
@@ -595,7 +596,14 @@ Errors block saving to the Stage. Warnings are shown but allowed.
 
 ### 10.4 Storage and import/export
 
-- **Storage:** IndexedDB, through the small `idb` wrapper. It holds the cue sheets and settings (seek offset, poll interval). No credentials are ever stored (D18), so exports can't contain any. IndexedDB is chosen over `localStorage` because v2 needs to store file handles for local audio, which `localStorage` cannot hold.
+- **What IndexedDB is:**
+  - The browser's built-in database: think of an embedded document store with keys, indexes and transactions, similar in spirit to LiteDB or SQLite.
+  - Each website gets its own private database. It stays on that computer, in that browser profile, and isn't synced anywhere.
+  - It holds structured objects directly, with no serialisation needed, and allows hundreds of megabytes.
+  - Its native API is asynchronous and callback-based. The small `idb` library wraps it in promises.
+  - `localStorage`, the simpler alternative, is synchronous, holds only strings, is limited to about 5 MB, and can't hold file handles.
+  - **Risk:** a browser may delete a site's data when the disk is nearly full, unless the site has been granted persistent storage. The app requests it (`navigator.storage.persist()`) and reminds you to export backups.
+- **Storage:** IndexedDB, through the `idb` wrapper. It holds the cue sheets and settings (seek offset, poll interval). No credentials are ever stored (D18), so exports can't contain any. IndexedDB is chosen over `localStorage` because v2 needs to store file handles for local audio, which `localStorage` cannot hold.
 - **Export:** one sheet or the whole library, as `.json` files.
 - **Import:** checked against the schema with `zod`. Older `schemaVersion`s are upgraded by migration functions. When a sheet with the same `id` already exists, the user chooses **keep both**, **replace**, or **skip**. Imported text (titles, names, labels, notes) is only ever displayed as plain text, never as HTML.
 - **Sharing with other DMs:** JSON files contain only timestamps and track IDs, never audio, so they can be shared freely. The recipient needs Premium and access to the same track.
@@ -780,6 +788,7 @@ The Conductor, the data model and the UI stay the same. Only a new backend and d
 
 | Option | Notes |
 |---|---|
+| **Jam already works** | Possible, untested: if Jam guests follow the host's seeks, loops reach them with no extra work, though each guest may hear jumps at slightly different times. Spike 0 tests it |
 | Spotify adds a Jam API | Not available today. It would need to be re-evaluated |
 | **Follower mode:** each remote player runs the looper with their own Premium login. The DM's Conductor sends its commits over a relay, and each follower seeks locally | Development Mode's 5-user limit fits a DM plus 4 players. All of R1 still applies, and the timing between listeners would only be approximate |
 | Local files plus a Discord bot or VTT audio | The cleanest route for online groups. It isn't possible with Spotify audio |
@@ -802,7 +811,7 @@ The Conductor, the data model and the UI stay the same. Only a new backend and d
 
 | Milestone | Contents | Exit criteria |
 |---|---|---|
-| **Spike 0: measure Spotify seeks** (go/no-go) | PKCE login, SDK device, a hard-coded track, and a 10 s loop for 100 passes. Log the seek-to-sample delay, and how far position samples scatter around the extrapolated estimate (to decide whether smoothing is needed, §9.3). **Record the speaker output** with a phone or external recorder (tab capture can't record DRM audio) and measure the gaps in an audio editor | Median gap and p95 gap compared with NFR-2. **If it fails:** decide with you whether to accept it or bring v2 (local files) forward |
+| **Spike 0: measure Spotify seeks** (go/no-go) | PKCE login, SDK device, a hard-coded track, and a 10 s loop for 100 passes. Log the seek-to-sample delay, and how far position samples scatter around the extrapolated estimate (to decide whether smoothing is needed, §9.3). Start a Spotify Jam from your phone while the looper plays, and check whether a guest device follows the loop jumps (§14.3). **Record the speaker output** with a phone or external recorder (tab capture can't record DRM audio) and measure the gaps in an audio editor | Median gap and p95 gap compared with NFR-2. **If it fails:** decide with you whether to accept it or bring v2 (local files) forward |
 | **M1: Conductor + Stage** | Conductor with tests, the driver, the Spotify backend, and a Stage loading a hand-written JSON sheet | All of §8 works against a real track. NFR-1 and NFR-3 are met |
 | **M2: Editor + library** | Editor with validation and previews, IndexedDB storage, import/export | You can author the §7.6 example from scratch in the UI |
 | **M3: Hardening** | Calibration settings, all of §9.6, wake lock, mini Stage (Picture-in-Picture), deployment to GitHub Pages | A 4-hour soak test passes NFR-4 |
