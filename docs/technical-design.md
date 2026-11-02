@@ -291,7 +291,9 @@ stateDiagram-v2
   Looping --> Looping: loop end, cue T, no span (enter T)
   Looping --> Stopped: loop end, cue END, no outro
   Transition --> Looping: span end, target is a section
-  Transition --> Stopped: span end, target is END
+  Transition --> Stopped: span end, target is END, nothing pending
+  Transition --> Transition: span end, target is END, X pending, START to X resolves to a span
+  Transition --> Looping: span end, target is END, X pending, no span
   Looping --> Looping: Jump now to section T (hard cut)
   Transition --> Looping: Jump now to section T (hard cut)
   Looping --> Stopped: Jump now with END pending
@@ -338,7 +340,7 @@ A **boundary** is the end of the span currently playing.
 - **End of a loop pass in section S:**
   - If something is pending, resolve the transition `S → pending` (§7.4). Play the transition span if there is one, otherwise enter the target loop (or stop, if the target is `END`). Then clear the pending cue.
   - If nothing is pending, loop again: seek to `S.loop.startMs` and add one to the pass count.
-- **End of a transition span:** enter the target loop at `loop.startMs`, or stop if the target is `END`.
+- **End of a transition span:** enter the target loop at `loop.startMs`. If the target is `END`, stop, unless a section X is pending (D17). In that case, resolve `@start → X` and jump there as if starting from silence, intro included. This is an ordinary planned jump, so the engine needs no separate stop-then-start step.
 
 Every move into a new span is a seek, unless the spans are contiguous (§7.5).
 
@@ -383,9 +385,9 @@ The driver carries out the plan and calls `conductor.commit(plan)` once it has h
    - **Redirect URIs:** `https://<you>.github.io/<repo>/callback` (production) and `http://127.0.0.1:5173/callback` (development; `localhost` is not allowed).
    - **Tokens:** the access token is kept in memory only. The refresh token is kept in IndexedDB so you stay signed in, and it is refreshed automatically before it expires.
 2. Load `https://sdk.scdn.co/spotify-player.js` and create a `Spotify.Player` named **"DM Audio Looper"**.
-3. Inside the same click handler, call `player.activateElement()`, because browsers only allow audio to start after a user gesture.
-4. On the `ready` event, record the `device_id`.
-5. Check `GET /v1/me` for `product === "premium"` and show a clear error if the account isn't Premium.
+3. On the `ready` event, record the `device_id`.
+4. Check `GET /v1/me` for `product === "premium"` and show a clear error if the account isn't Premium.
+5. **Start session (D16).** Browsers only let audio start after a click on the page, and the sign-in redirect leaves the page, so the **Connect** click can't unlock audio. The Stage therefore shows one **Start session** button, once per page load. Its click calls `player.activateElement()` and starts the muted preload (§9.2).
 
 ### 9.2 Spotify calls
 
@@ -402,7 +404,7 @@ To save API quota and avoid network delay, **all time-critical commands go throu
 
 A typical session makes **only a few dozen Web API calls**, all at start-up and when loading tracks.
 
-**Preload:** starting a track is a network round trip of several hundred milliseconds. When a sheet opens on the Stage, the backend loads the track at its first section's start **with volume at 0**, pauses, and then restores the volume. The first click then only needs a local `resume()`.
+**Preload:** starting a track is a network round trip of several hundred milliseconds. After *Start session*, whenever a sheet opens on the Stage, the backend loads the track at its first section's start **with volume at 0**, pauses, and then restores the volume. The first click then only needs a local `resume()`.
 
 ### 9.3 Playhead clock
 
@@ -643,6 +645,7 @@ A list of cue sheets with search, **New from Spotify link**, **Import**, and **E
 - **Pads** are large, colored buttons. The playing pad shows a progress bar. The pending pad pulses and counts down to the switch.
 - ***Jump now*** is enabled only while a cue is pending. Its label reflects the pending cue, for example "Jump to Combat" or "Stop now".
 - **Mini Stage (FR-15):** a compact version of the pads in an always-on-top **Document Picture-in-Picture** window (Chrome/Edge 116+). It can float over your VTT or notes, which is the "overlay" from your original idea.
+- ***Start session*:** after sign-in, the Stage shows this single button until it is clicked. The click unlocks browser audio and preloads the track (§9.1).
 - **Debug drawer (hidden by default):** shows the seek lead, the last jump's lateness, the sample rate and the anchor drift. It is used in Spike 0 and when tuning.
 
 ---
@@ -666,6 +669,8 @@ A list of cue sheets with search, **New from Spotify link**, **Import**, and **E
 | D13 | **Never overlap, mix, process, record or cache Spotify audio** | Crossfades | Spotify Developer Policy III.7 and the DRM | Required |
 | D14 | **Stack: TypeScript, React and Vite; Vitest; Playwright**; `idb`; `zod` | Svelte, Solid, Vue, plain TypeScript or Lit, Angular, non-JavaScript stacks; plain JavaScript; Next.js | TypeScript protects the risky timing and state code. React has the largest ecosystem for a form-heavy editor. The engine doesn't depend on any framework, so this choice is reversible. See §12.1 | Proposed |
 | D15 | **Positions in integer milliseconds of track time** | Seconds as floating point; samples | Easy to read in JSON and editors, with no floating-point drift. v2 converts to samples internally | Proposed |
+| D16 | **A *Start session* button unlocks audio after sign-in** | Unlock on the Connect click (impossible: the sign-in redirect loses the click); unlock on the first pad click | One extra click per session, and in return the first cue starts instantly from the muted preload | You |
+| D17 | **Clicking a section during the outro queues a restart:** when the outro ends, that section starts as if from silence, intro included | Disable pads during the outro; cancel the ending and jump straight away | Your choice. It's an ordinary jump to the resolved `@start → X` span, so the engine needs no extra state | You |
 
 ### 12.1 Technology stack rationale (D14)
 
@@ -730,7 +735,7 @@ The Conductor, driver, backends, schema and storage are all plain TypeScript, so
 | R5 | **Development Mode limits:** Premium owner, 5 users, shared quota. The rules changed three times between 2024 and 2026 | Medium: future changes could break the app | Medium | Minimal Web API use (§9.2), and the backend sits behind an interface |
 | R6 | **One stream per account:** you can't use Spotify elsewhere while the looper plays, and opening Spotify on another device takes over playback | Low | Medium | Take-over detection and a reconnect prompt (§9.6) |
 | R7 | **Re-linked or remastered tracks:** the same song can have different track IDs or slightly different timing by region or edition | Loop points drift | Low | Store the track URI and ISRC. Accept `linked_from` matches. Warn if the reported duration differs from the stored one by more than 500 ms |
-| R8 | **Browser dependence:** desktop Chrome/Edge only, the tab must stay open, and the first playback needs a click | Low | — | `activateElement()` on Connect, a wake lock, and a warning when the tab closes |
+| R8 | **Browser dependence:** desktop Chrome/Edge only, the tab must stay open, and the first playback needs a click | Low | — | A *Start session* button that unlocks audio (D16), a wake lock, and a warning when the tab closes |
 | R9 | **Needs internet at the table** | Medium if the venue's Wi-Fi is poor | Low–Medium | Spotify buffers ahead, so the current track keeps looping during short drops. Local files work fully offline |
 | R10 | **No Jam or remote players in v1** | Online groups and hybrid tables aren't served | Certain | §14.3 describes possible paths |
 | R11 | **Scheduling in the browser** (timer delays, garbage-collection pauses) | Occasional late jumps | Low | Two-stage timer, the audible-tab exemption, a Worker fallback, and the watchdog |
@@ -798,7 +803,7 @@ The Conductor, the data model and the UI stay the same. Only a new backend and d
 
 1. **Gap tolerance:** what gap at the loop point is acceptable at the table? Spike 0 will give real numbers, and that decides how much effort goes into Spotify versus moving local files forward.
 2. **D11 behavior:** is "transitions run to completion" right, or should a new cue during a transition skip straight to the new target when the transition ends?
-3. **Clicks during an outro:** is "the outro finishes, then the pending section starts from silence" right, or should clicking a section during an outro cancel the ending?
+3. **Clicks during an outro:** resolved by D17.
 4. **Hosting:** GitHub Pages (needs an HTTPS redirect URI) or only on `127.0.0.1` on your laptop? This affects only the setup steps.
 5. **Sharing:** do you want a public "cue sheet pack" format or repository for other DMs, or is file sharing enough?
 6. **Accounts:** will the Spotify developer app be registered under your own Premium account? Development Mode requires that.
