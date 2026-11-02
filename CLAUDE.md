@@ -145,6 +145,8 @@ The repo owner is a highly experienced engineer (C#, Go, Python) who is new to T
 3. **Automated review:**
    - Run Claude Code's `/code-review` on the branch: at `high` effort for engine, driver, auth or storage changes, `medium` otherwise.
    - Also run `/security-review` if the diff touches auth, tokens or imported files.
+   - Review tools only report. Never use options that apply fixes automatically (e.g. `/code-review --fix`). Make each fix deliberately.
+   - Optional: `/simplify` for diffs over about 200 lines. It edits files itself, so run it only on a clean working tree, then inspect its changes and keep or discard each one.
 4. **Act on findings:** fix each one, or dismiss it with a one-line reason. If the fixes were substantial, review again.
 5. **Re-check:** run step 1 again after the fixes, and record the outcome in the PR.
 
