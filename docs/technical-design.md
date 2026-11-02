@@ -215,9 +215,9 @@ All transition rules share one shape:
 
 ```ts
 interface TransitionRule {
-  from: SectionId | "@start" | "*";   // "*" means from anywhere, including START
-  to:   SectionId | "@end";
-  span: Span | null;                  // null means jump directly; it blocks a default
+  readonly from: SectionId | "@start" | "*";   // "*" means from anywhere, including START
+  readonly to:   SectionId | "@end";
+  readonly span: Span | null;                  // null means jump directly; it blocks a default
 }
 ```
 
@@ -304,14 +304,14 @@ The Conductor's state is a single record:
 
 ```ts
 type PlayState =
-  | { kind: "stopped" }
-  | { kind: "looping"; section: SectionId; pass: number }
-  | { kind: "transition"; from: SectionId | "@start"; to: SectionId | "@end"; span: Span };
+  | { readonly kind: "stopped" }
+  | { readonly kind: "looping"; readonly section: SectionId; readonly pass: number }
+  | { readonly kind: "transition"; readonly from: SectionId | "@start"; readonly to: SectionId | "@end"; readonly span: Span };
 
 interface ConductorState {
-  play: PlayState;
-  pending: SectionId | "@end" | null;
-  paused: boolean;            // pausing freezes whatever play state is current
+  readonly play: PlayState;
+  readonly pending: SectionId | "@end" | null;
+  readonly paused: boolean;   // pausing freezes whatever play state is current
 }
 ```
 
@@ -365,10 +365,10 @@ After every event, the Conductor reports the **next planned jump**:
 
 ```ts
 interface PlannedJump {
-  atMs: TrackMs;            // the boundary: the end of the current span
-  seekToMs: TrackMs | null; // null means contiguous: just change state, no seek
-  stopAfter: boolean;       // true when the next state is "stopped"
-  next: PlayState;          // the state once the jump is done
+  readonly atMs: TrackMs;            // the boundary: the end of the current span
+  readonly seekToMs: TrackMs | null; // null means contiguous: just change state, no seek
+  readonly stopAfter: boolean;       // true when the next state is "stopped"
+  readonly next: PlayState;          // the state once the jump is done
 }
 ```
 
@@ -466,7 +466,7 @@ sequenceDiagram
 
 - **Measured part:** a moving average of the time from calling `seek()` to the first state sample within ±50 ms of the target. It is limited to the range 0–400 ms.
 - **User offset:** a global ±300 ms slider in Settings, tuned by ear with the editor's *Preview seam* button. Speaker latency (for example, Bluetooth) delays the old and new audio equally, so it does **not** need compensation.
-- **Effective lead** = measured part + user offset.
+- **Effective lead** = measured part + user offset, capped at 700 ms. The minimum transition length (§10.3) depends on this cap.
 - **Trade-off:** sending early cuts the last few milliseconds of the loop instead of making the loop start late, which keeps the next loop on the beat. Spike 0 (§16) checks whether the measured part actually matches what you hear.
 
 **Authoring tip (for the editor's help text):** loops sound best when the end point sits on a sustained note or a beat where a short gap is hard to notice.
@@ -491,45 +491,51 @@ sequenceDiagram
 ### 10.1 Types
 
 ```ts
-type TrackMs = number;                    // integer milliseconds of track time
-interface Span { startMs: TrackMs; endMs: TrackMs }   // [start, end)
+// Branded types: plain numbers and strings at runtime, but the compiler keeps them apart.
+type TrackMs   = number & { readonly __brand: "TrackMs" };   // integer ms of track time
+type PerfMs    = number & { readonly __brand: "PerfMs" };    // wall-clock ms (performance.now())
+type SectionId = string & { readonly __brand: "SectionId" }; // matches ^[a-z0-9][a-z0-9-]*$
+
+interface Span { readonly startMs: TrackMs; readonly endMs: TrackMs }   // [start, end)
 
 interface CueSheet {
-  schema: "dmaudiolooper/cuesheet";
-  schemaVersion: 1;
-  id: string;                             // UUID
-  title: string;                          // display name, which you can edit
-  source: SpotifySource;                  // v2 adds LocalSource
-  sections: Section[];                    // order = pad order on the Stage
-  transitions: TransitionRule[];
-  notes?: string;
-  createdAt: string;                      // ISO 8601
-  updatedAt: string;
+  readonly schema: "dmaudiolooper/cuesheet";
+  readonly schemaVersion: 1;
+  readonly id: string;                             // UUID
+  readonly title: string;                          // display name, which you can edit
+  readonly source: SpotifySource;                  // v2 adds LocalSource
+  readonly sections: readonly Section[];           // order = pad order on the Stage
+  readonly transitions: readonly TransitionRule[];
+  readonly notes?: string;
+  readonly createdAt: string;                      // ISO 8601
+  readonly updatedAt: string;
 }
 
 interface SpotifySource {
-  kind: "spotify";
-  trackUri: string;                       // spotify:track:<id>
-  trackName: string;
-  artists: string[];
-  durationMs: TrackMs;
-  isrc?: string;                          // lets v2 match the same recording as a local file
+  readonly kind: "spotify";
+  readonly trackUri: string;                       // spotify:track:<id>
+  readonly trackName: string;
+  readonly artists: readonly string[];
+  readonly durationMs: TrackMs;
+  readonly isrc?: string;                          // lets v2 match the same recording as a local file
 }
 
 interface Section {
-  id: string;                             // short ID, stable across renames
-  name: string;
-  color?: string;
-  loop: Span;
+  readonly id: SectionId;                          // generated from the name, e.g. "boss-fight"; stable across renames
+  readonly name: string;
+  readonly color?: string;
+  readonly loop: Span;
 }
 
 interface TransitionRule {
-  from: string | "@start" | "*";
-  to: string | "@end";
-  span: Span | null;
-  label?: string;                         // e.g. "drum fill"
+  readonly from: SectionId | "@start" | "*";
+  readonly to: SectionId | "@end";
+  readonly span: Span | null;
+  readonly label?: string;                         // e.g. "drum fill"
 }
 ```
+
+Files store plain numbers and strings. The import check (§10.4) converts them into these types as they enter the app. Section IDs can't contain `*` or `@`, so they never clash with the reserved names.
 
 ### 10.2 Example file
 
@@ -575,7 +581,8 @@ Errors block saving to the Stage. Warnings are shown but allowed.
 | A span is not `0 ≤ startMs < endMs ≤ durationMs` | Error |
 | A section loop is shorter than 1 s | Error |
 | A section loop is shorter than 5 s (seek gaps become very noticeable) | Warning |
-| A transition span is shorter than 250 ms | Error |
+| A transition span is shorter than 1 s (the seek after it may need to go out up to 700 ms early, §9.5) | Error |
+| A section ID doesn't match `^[a-z0-9][a-z0-9-]*$` | Error |
 | A loop ends within 250 ms of the track's end (risk of the track ending before the seek) | Warning |
 | `from` or `to` refers to a section that doesn't exist; `@end` used as `from`; `@start` used as `to` | Error |
 | Two rules have the same `(from, to)` | Error |
