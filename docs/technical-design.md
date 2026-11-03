@@ -268,7 +268,7 @@ interface PositionSample {
 
 1. **Plan.** After every Conductor result, the driver cancels any pending wake-up. If there is a `nextJump`, it works out when to act:
    `fireAtMs = now + (nextJump.atMs − estimatedPosition(now)) − leadMs`.
-   `leadMs` is the seek lead (§9.5) for a seek, and 0 for a contiguous step.
+   `leadMs` is the seek lead (§9.5) for a seek. It is 0 when the next section starts exactly where the current one ends in the song (a *contiguous* boundary, §7.5): there is no seek to send, so the driver only updates its state at the boundary.
 2. **Wait.** It asks the clock to wake it at `fireAtMs`. Each new position sample updates the estimate, and the driver repeats step 1.
 3. **Act.**
    - On waking, it sends the seek, or nothing for a contiguous step, and records the time.
@@ -504,14 +504,18 @@ The driver carries out the plan and then sends the Conductor a `jumpDone` event 
 
 To save API quota and avoid network delay, **all time-critical commands go through the SDK's local player**, not the Web API.
 
-| Purpose | Call | When |
-|---|---|---|
-| Track metadata | `GET /v1/tracks/{id}` (name, artists, `duration_ms`, `external_ids.isrc`) | When a cue sheet is created |
-| Load a track on our device | `PUT /v1/me/player/play?device_id=…` with body `{ "uris": [trackUri], "position_ms": startMs }` | When the Stage opens a sheet (preload) and when playback starts |
-| Safety net against track end | `PUT /v1/me/player/repeat?state=track&device_id=…` | After loading |
-| Seek, pause, resume, volume | SDK: `player.seek(ms)`, `pause()`, `resume()`, `setVolume()` | Every boundary. **No Web API calls** |
-| Playhead samples | SDK: the `player_state_changed` event and `getCurrentState()` | Continuously |
-| Search (optional) | `GET /v1/search?type=track` (may be capped at 10 results in Development Mode) | In the editor |
+| Purpose | Call | Docs | When |
+|---|---|---|---|
+| Sign-in | Authorization Code with PKCE | [PKCE flow](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow) | On *Connect* |
+| Premium check | `GET /v1/me` (`product`) | [Get Current User's Profile](https://developer.spotify.com/documentation/web-api/reference/get-current-users-profile) | After sign-in |
+| Track metadata | `GET /v1/tracks/{id}` (name, artists, `duration_ms`, `external_ids.isrc`) | [Get Track](https://developer.spotify.com/documentation/web-api/reference/get-track) | When a cue sheet is created |
+| Load a track on our device | `PUT /v1/me/player/play?device_id=…` with body `{ "uris": [trackUri], "position_ms": startMs }` | [Start/Resume Playback](https://developer.spotify.com/documentation/web-api/reference/start-a-users-playback) | When the Stage opens a sheet (preload) and when playback starts |
+| Safety net against track end | `PUT /v1/me/player/repeat?state=track&device_id=…` | [Set Repeat Mode](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback) | After loading |
+| Create the player | SDK: `new Spotify.Player(...)`, `connect()`, the `ready` event | [Web Playback SDK reference](https://developer.spotify.com/documentation/web-playback-sdk/reference) | On page load |
+| Unlock audio | SDK: `player.activateElement()` | [Web Playback SDK reference](https://developer.spotify.com/documentation/web-playback-sdk/reference) | On *Start session* |
+| Seek, pause, resume, volume | SDK: `player.seek(ms)`, `pause()`, `resume()`, `setVolume()` | [Web Playback SDK reference](https://developer.spotify.com/documentation/web-playback-sdk/reference) | Every boundary. **No Web API calls** |
+| Playhead samples | SDK: the `player_state_changed` event and `getCurrentState()` | [Web Playback SDK reference](https://developer.spotify.com/documentation/web-playback-sdk/reference) | Continuously |
+| Search (optional) | `GET /v1/search?type=track` (may be capped at 10 results in Development Mode) | [Search for Item](https://developer.spotify.com/documentation/web-api/reference/search) | In the editor |
 
 A typical session makes **only a few dozen Web API calls**, all at start-up and when loading tracks.
 
