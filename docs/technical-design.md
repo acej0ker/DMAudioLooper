@@ -157,11 +157,12 @@ flowchart LR
   end
   SP[("Spotify<br/>accounts · Web API · streaming")]
 
-  UI -- "cue / jump now / end / pause" --> Cond
-  Cond -- "state + next planned jump" --> UI
+  UI -- "cue / jump now / end / pause" --> Drv
+  Drv -- "state snapshot" --> UI
   UI <--> Store
   UI <--> IO
-  Cond <--> Drv
+  Drv -- "events" --> Cond
+  Cond -- "state + next planned jump" --> Drv
   Drv --> SB
   Drv -.-> LB
   SB --> SP
@@ -172,7 +173,7 @@ flowchart LR
 | Component | Responsibility | Depends on |
 |---|---|---|
 | **Conductor** | Holds the musical state (what is playing and what is pending), applies the cueing rules, and computes the **next planned jump**. It has no timers, I/O or framework code, so it can be fully unit-tested | Cue sheet only |
-| **Playback driver** | Estimates the playhead, schedules each planned jump at the right moment (sent early by the seek lead), tells the conductor once a jump has happened, and runs the watchdog | Conductor, PlaybackBackend |
+| **Playback driver** | Holds the live session, passes UI commands to the Conductor, estimates the playhead, sends each planned jump at the right moment, and recovers from failures. Detailed in §6.1 | Conductor, PlaybackBackend, Clock |
 | **PlaybackBackend** | A thin wrapper over the audio source: `load`, `play`, `pause`, `seek` and position samples. Each backend declares what it can do (for example, whether it can schedule jumps sample-accurately) | Spotify SDK, or Web Audio |
 | **Cue sheet store** | Saves and loads cue sheets in IndexedDB | — |
 | **Import/export** | Converts between JSON files and cue sheets, checks them against the schema, and migrates old schema versions | — |
@@ -182,6 +183,112 @@ flowchart LR
 
 1. The cueing rules can be tested exhaustively with a fake clock.
 2. The local-audio backend in v2 can use the same Conductor unchanged, with its own driver that schedules sample-accurately.
+
+### 6.1 Playback driver in depth
+
+The Conductor decides **what** happens next; the driver makes it happen **on time**. The driver is the only component that talks to both the Conductor and the backend, and it holds the live session state that the UI shows.
+
+This is the "functional core, imperative shell" pattern: the Conductor is a pure function, and the driver is the shell around it that holds state, keeps time and performs side effects. In Elm or Redux terms, the Conductor is the reducer and the driver is the effect runner.
+
+#### Responsibilities
+
+| # | Responsibility | Details |
+|---|---|---|
+| 1 | **Hold the session** | The loaded cue sheet, the current `ConductorState` and the next `PlannedJump`. Nothing else stores them |
+| 2 | **Accept commands** | The UI calls `cue(target)`, `jumpNow()`, `pause()` and `resume()`. The driver passes each one to the Conductor and carries out what comes back |
+| 3 | **Keep the playhead clock** | Estimates the track position between the backend's position samples (§9.3) |
+| 4 | **Send jumps on time** | Wakes up just before each boundary and sends the seek or stop. A contiguous step sends nothing (§9.4) |
+| 5 | **Calibrate the seek lead** | Measures how long each seek takes to land and keeps a moving average (§9.5) |
+| 6 | **Confirm and recover** | Checks that each seek landed. Handles missed boundaries, playback taken over by another device, and backend errors (§9.6) |
+| 7 | **Publish state** | Gives the UI a snapshot and a change notification, read through React's `useSyncExternalStore` |
+| 8 | **Record timing metrics** | Seek delay, lateness and sample scatter, for the debug drawer and Spike 0 |
+
+The driver doesn't apply music rules (the Conductor does), know anything Spotify-specific (SpotifyBackend), save data (cue sheet store) or draw anything (UI).
+
+#### Contract with the Conductor
+
+The Conductor is one pure function. Each event returns the new state, possibly an action to carry out right away, and the next planned jump (§8.6):
+
+```ts
+type ConductorEvent =
+  | { readonly kind: "cue"; readonly target: SectionId | "@end" }
+  | { readonly kind: "jumpNow" }
+  | { readonly kind: "pause" }
+  | { readonly kind: "resume" }
+  | { readonly kind: "jumpDone" };                     // the driver has carried out the planned jump
+
+type ImmediateAction =
+  | { readonly kind: "playFrom"; readonly positionMs: TrackMs } // start from silence
+  | { readonly kind: "seek"; readonly positionMs: TrackMs }     // Jump now to a section
+  | { readonly kind: "stop" }                                    // Jump now with End pending
+  | { readonly kind: "pause" }
+  | { readonly kind: "resume" };
+
+interface ConductorResult {
+  readonly state: ConductorState;
+  readonly action?: ImmediateAction;
+  readonly nextJump?: PlannedJump;                     // absent while stopped or paused
+}
+
+function conduct(sheet: CueSheet, state: ConductorState, event: ConductorEvent): ConductorResult;
+```
+
+#### Dependencies
+
+The driver's constructor takes two dependencies, so tests can pass in fakes:
+
+```ts
+interface Clock {
+  now(): PerfMs;
+  wakeAt(timeMs: PerfMs, callback: () => void): () => void;   // returns a cancel function
+}
+
+interface PlaybackBackend {
+  load(trackUri: string, positionMs: TrackMs): Promise<void>; // ready to play, paused
+  play(): Promise<void>;
+  pause(): Promise<void>;
+  seek(positionMs: TrackMs): Promise<void>;
+  onSample(listener: (sample: PositionSample) => void): () => void;
+  onProblem(listener: (problem: BackendProblem) => void): () => void;
+}
+
+interface PositionSample {
+  readonly trackUri: string;
+  readonly positionMs: TrackMs;
+  readonly paused: boolean;
+  readonly receivedAtMs: PerfMs;
+}
+```
+
+- **`Clock.wakeAt`** hides the precision-timing technique. The real clock uses a coarse `setTimeout` until about 50 ms before the target, then a tight loop (§9.4). The fake clock runs callbacks when a test advances time.
+- **The backend produces position samples itself.** SpotifyBackend polls the SDK every 200 ms and forwards its state events. The fake backend emits samples as the fake clock advances.
+- **`BackendProblem`** covers the failures in §9.6: playback taken over, expired sign-in, lost network, and SDK errors.
+
+#### One jump, step by step
+
+1. **Plan.** After every Conductor result, the driver cancels any pending wake-up. If there is a `nextJump`, it works out when to act:
+   `fireAtMs = now + (nextJump.atMs − estimatedPosition(now)) − leadMs`.
+   `leadMs` is the seek lead (§9.5) for a seek, and 0 for a contiguous step.
+2. **Wait.** It asks the clock to wake it at `fireAtMs`. Each new position sample updates the estimate, and the driver repeats step 1.
+3. **Act.**
+   - On waking, it sends the seek, or nothing for a contiguous step, and records the time.
+   - It sets a provisional estimate: the new position, playing from the boundary time.
+   - It sends `jumpDone` to the Conductor, which returns the next state and plan, so the UI updates straight away and step 1 starts again.
+4. **Confirm.** A sample within ±50 ms of the expected position means the seek has landed, and the driver records its delay for the seek lead (§9.5). With no confirmation within 1 s, it retries once and then reports an error (§9.6).
+
+Stops (a planned jump with `stopAfter`) follow the same steps, with a pause in place of the seek.
+
+#### Shape of the code
+
+- **One class, `PlaybackDriver`,** in `src/playback/`. It's a stateful adapter with a lifecycle, which is when `CLAUDE.md` allows a class.
+- **Public methods:** `cue()`, `jumpNow()`, `pause()`, `resume()`, `subscribe()`, `getSnapshot()` and `dispose()`. Opening a cue sheet creates a driver. `dispose()` cancels its wake-up and listeners.
+- **Snapshot for the UI:**
+  - the Conductor state;
+  - the next planned jump, for the countdown;
+  - the latest position sample, so the progress bar can animate itself without re-rendering every frame;
+  - a status: `loading`, `ready`, or `error` with a message.
+- **Internal state:** the latest sample (the anchor), the seek-lead average, any seek awaiting confirmation, and the cancel function for the pending wake-up.
+- **Tests (§15):** scenario tests with the fake clock and fake backend. For example: "100 loop passes with a seek delay of 120 ± 30 ms; every seek is sent within ±10 ms of plan, and the seek lead converges".
 
 ---
 
@@ -373,7 +480,7 @@ interface PlannedJump {
 }
 ```
 
-The driver carries out the plan and calls `conductor.commit(plan)` once it has happened. The Conductor never deals with wall-clock time.
+The driver carries out the plan and then sends the Conductor a `jumpDone` event (§6.1). The Conductor never deals with wall-clock time.
 
 ---
 
@@ -454,13 +561,13 @@ sequenceDiagram
     P-->>D: position, paused
   end
   Note over D: 0:56.000 reached, contiguous, no seek
-  D->>C: commit(transition explore to boss)
+  D->>C: jumpDone (now in transition explore to boss)
   C-->>D: plan: at 1:00.000, seek to 1:48.000, enter looping boss
   Note over D: fire at 1:00.000 minus seek lead
   D->>P: seek(108000)
   P-->>D: player_state_changed (position about 108000)
   Note over D: seek confirmed, update measured seek lead
-  D->>C: commit(looping boss, pass 1)
+  D->>C: jumpDone (now looping boss, pass 1)
   C-->>UI: NOW Boss, pending cleared
 ```
 
