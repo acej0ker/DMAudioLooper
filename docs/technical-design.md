@@ -333,7 +333,7 @@ Every section has a **kind**, a name and a span:
 - **Transition:** it plays once, only as part of a cue. It never appears as a pad.
 
 Rules:
-- Sections may overlap or nest. For example, a "Combat (short)" loop can sit inside "Combat (full)". The same span can also be the end of one loop and a transition's start.
+- Sections may overlap or nest. For example, a "Combat (short)" loop can sit inside "Combat (full)". One section's end time can be the next section's start time, which is what lets the music flow on without a seek (§7.5).
 - The order of loop sections in the cue sheet is the order of the pads on the Stage.
 - One transition section can be used by any number of pairings. The fill in §7.6 is used twice.
 
@@ -438,7 +438,7 @@ The looper follows whatever the Spotify app plays on it:
   - **Inside a loop section:** that loop is engaged straight away. If the position is inside several, the first in pad order wins.
   - **Anywhere else:** the state is **free play**. The song plays normally, and the next loop section ahead of the playhead is planned for auto-engage.
 - **Auto-engage.** In free play, when the playhead reaches the start of a loop section, that loop engages, with no seek. A song started from 0:00 therefore plays its intro naturally and settles into its first loop, with no intro configuration.
-- **Clicking a pad in free play** jumps straight to that loop's start, at once, with no transition.
+- **Clicking a pad in free play** jumps straight to that loop's start, at once, with no transition. While playback is paused, pads are disabled with the hint "Press play in your Spotify app".
 
 ---
 
@@ -528,7 +528,7 @@ A possible later improvement is a one-click shortcut, such as Shift+click or a l
 
 The Spotify app on your phone or computer is the remote control for playback. The looper reacts to it:
 
-- **Pause.** The next poll reports `paused`, so the driver cancels its pending wake-up. The Conductor's state, including any pending cue, is kept.
+- **Pause.** The next poll reports `paused`, so the driver cancels its pending wake-up. The Conductor's state, including any pending cue, is kept. Pads and *Jump now* are disabled until playback resumes, so a cue never seeks into silence.
 - **Resume.** The driver plans the next jump again from the new position.
 - **Seek.** If a poll's position differs from the driver's estimate by more than 500 ms, and no jump of the looper's own is in progress, the playhead moved by itself. The driver sends `located`, and the Conductor clears any pending cue and re-locates (§7.8).
 - **Skip or start another song.** This is a track change, so auto-load runs (§7.8).
@@ -770,6 +770,7 @@ Errors block saving. Warnings are shown but allowed.
 | A section ID doesn't match `^[a-z0-9][a-z0-9-]*$`, or two sections share an ID | Error |
 | A pairing's `from` isn't a loop section or `*`; its `to` isn't a loop section or `@end`; its `via` isn't a transition section or `null` | Error |
 | Two pairings have the same `from` and `to` | Error |
+| A pairing has `via: null` but doesn't override a default (`from: "*"`) for the same target, so it has no effect | Warning |
 | A pairing has `from` equal to `to` | Error |
 | Two boundaries a cue moves between are within 20 ms of each other but not equal (§7.5) | Warning, with a "make equal" fix |
 | A loop ends within 250 ms of the track's end (the track may end before the seek) | Warning |
