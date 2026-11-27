@@ -11,7 +11,7 @@ DM Audio Looper is a browser app that lets a tabletop Game Master loop sections 
 
 ## Commands
 
-These are planned. The scaffolding task creates them and must update this table to match.
+Run `npm install` once (Node 24, see `.nvmrc`). CI runs `npm run check` on every PR and on `main`.
 
 | Command | What it does |
 |---|---|
@@ -19,10 +19,11 @@ These are planned. The scaffolding task creates them and must update this table 
 | `npm run check` | Typecheck, lint, Prettier format check and unit tests. **Must pass before every push and every PR** |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
-| `npm run format` | Prettier: rewrites files in place |
+| `npm run format` | Prettier: rewrites files in place (Markdown is excluded) |
+| `npm run format:check` | Prettier: reports unformatted files |
 | `npm test` | Vitest unit tests |
-| `npm run e2e` | Playwright end-to-end tests against the fake backend |
-| `npm run build` | Static production build into `dist/` |
+| `npm run e2e` | *Later (M1):* Playwright end-to-end tests against the fake backend |
+| `npm run build` | *Later (first app page):* static production build into `dist/` |
 
 ## Layout (planned)
 
