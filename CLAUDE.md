@@ -7,7 +7,7 @@ Rules for Claude Code (and humans) working in this repository. Keep this file sh
 DM Audio Looper is a browser app that lets a tabletop Game Master loop sections of video-game soundtracks and switch between them on cue, the way a game's music engine does. v1 plays music through Spotify (Web Playback SDK); v2 adds local audio files.
 
 - **Source of truth:** `docs/technical-design.md` (the TDD). Read the relevant sections before starting a task, and cite them in plans and PRs, e.g. `TDD §8.2`.
-- **Status:** the TDD is under review and there's no code yet. The next milestone is Spike 0 (TDD §16).
+- **Status:** the TDD (v0.2) is approved and there's no code yet. The next milestone is Spike 0 (TDD §16).
 
 ## Commands
 
@@ -32,7 +32,7 @@ src/
   playback/     Driver, playhead clock, scheduler, PlaybackBackend interface
     spotify/    SpotifyBackend and SDK loader
     fake/       FakeBackend for tests and the ?backend=fake dev mode
-  spotify-api/  OAuth PKCE and the Web API client
+  spotify-auth/ OAuth PKCE sign-in and token refresh
   storage/      IndexedDB, import/export, zod schemas, migrations
   ui/           React: views/, components/, hooks/
   lib/          Small shared helpers: branded time types, Result, time formatting
@@ -50,9 +50,9 @@ docs/           TDD and other docs
 
 1. **The engine is pure.** `src/engine` has no timers, no `Date.now()` or `performance.now()`, no DOM, no I/O, no React and no Spotify code. It maps `(state, event)` to `(state, plannedJump)` (TDD §8).
 2. **Time units are explicit.** Use the branded types `TrackMs` (position in the song) and `PerfMs` (wall-clock time). Every duration or position name ends in `Ms`. Never mix the two without an explicit conversion. Only the clock module reads `performance.now()`. Tests inject a fake clock.
-3. **Spotify policy.** Never overlap, mix, crossfade, process, record or cache Spotify audio (TDD D13, R1). Volume is changed only for the muted preload.
-4. **Time-critical commands go through the SDK.** Seek, pause, resume and volume use the Web Playback SDK. The Web API is used only for metadata and loading tracks (TDD §9.2).
-5. **No backend and no secrets.** The Spotify Client ID comes from `VITE_SPOTIFY_CLIENT_ID` in `.env.local`, which is gitignored. Never log or commit tokens.
+3. **Spotify policy.** Never overlap, mix, crossfade, process, record or cache Spotify audio (TDD D13, R1). The looper never changes volume; the Spotify app does.
+4. **Playback goes through the SDK only.** Seek, pause and resume use the Web Playback SDK. The looper makes no Web API calls (TDD §9.2).
+5. **No backend and no secrets.** Each DM's Client ID is entered on the setup screen and stored locally. `VITE_SPOTIFY_CLIENT_ID` in `.env.local` (gitignored) may prefill it for development. Never log, store or commit tokens (TDD D18).
 6. **Backends sit behind `PlaybackBackend`.** Nothing outside `playback/spotify` knows Spotify exists. This is justified by `FakeBackend` (needed now, for tests) and v2's `LocalAudioBackend`.
 
 ## Design principles
@@ -66,7 +66,7 @@ docs/           TDD and other docs
   Not valid: "we might need it later", "just in case", or guarding against states the types already rule out. Name the justification for each new abstraction in the plan.
 - **Composition over inheritance.** Never `extends` one of our own classes. Combine small functions and objects, and pass dependencies in through constructor or function parameters.
 - **DRY applies to knowledge, not text.** Each rule, constant and schema has a single source (e.g. the zod schema also produces the types). Code that merely looks similar may stay duplicated until a third copy appears or the copies must change together. A wrong abstraction costs more than duplication.
-- **Validate at the edges, trust the inside.** Check data where it enters the app: imported JSON, Web API responses, SDK events and user input. Inside the app, rely on the types. No defensive checks for impossible cases.
+- **Validate at the edges, trust the inside.** Check data where it enters the app: imported JSON, SDK events and user input. Inside the app, rely on the types. No defensive checks for impossible cases.
 - **Small, single-purpose units.** Each function does one thing. Prefer early returns to deep nesting. No hidden global mutable state.
 
 ## TypeScript standards
@@ -103,7 +103,7 @@ docs/           TDD and other docs
 ## React standards
 
 - Use function components and hooks only.
-- Components never call backends or the Web API directly. They go through the app's services and store.
+- Components never call the backend or the SDK directly. They go through the app's services and store.
 - Read Conductor and driver state with `useSyncExternalStore` and selectors, so each component re-renders only when its own data changes.
 - **No React state updates on every animation frame.** Progress bars and countdowns use CSS animations or a `requestAnimationFrame` loop writing to a ref (TDD §12.1).
 - **Accessibility:** use real `<button>`s and labelled inputs, keep keyboard focus visible, and never rely on colour alone to show state.
@@ -111,7 +111,7 @@ docs/           TDD and other docs
 
 ## Testing (tiered)
 
-- **Engine (`src/engine`): write the tests first.** Build table-driven cases from TDD §7.4, §7.6 and §8.2. Add property-based tests (`fast-check`) for invariants.
+- **Engine (`src/engine`): write the tests first.** Build table-driven cases from TDD §7.4, §7.6 and §8.2. Add property-based tests only if the tables leave gaps.
 - **Driver and clock:** test with a fake clock and a `FakeBackend` that simulates seek latency, jitter and noisy position reports. Never use real timers or sleeps in unit tests.
 - **Every logic change needs tests.** A bug fix starts with a test that fails without the fix.
 - **UI:** a few Playwright end-to-end tests of the main flows (create a sheet, cue, *Jump now*, *End*, import/export) against the fake backend. Don't test layout details.
