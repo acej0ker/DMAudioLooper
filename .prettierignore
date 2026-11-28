@@ -1,0 +1,5 @@
+dist/
+coverage/
+package-lock.json
+# Markdown is written by hand; Prettier's table alignment would rewrite the docs.
+*.md
